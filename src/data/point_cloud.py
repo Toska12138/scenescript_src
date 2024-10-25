@@ -49,11 +49,11 @@ class PointCloud:
             )
 
         except ImportError:
-            print("projectaria_tools not installed")
+            # print("projectaria_tools not installed")
 
             with open(point_cloud_filename, "rb") as f:
                 points_df = pd.read_csv(f, compression="gzip")
-                print(f"Loaded {points_df.shape[0]} points from {point_cloud_filename}")
+                # print(f"Loaded {points_df.shape[0]} points from {point_cloud_filename}")
 
             # filter the point cloud using thresholds on the inverse depth and distance standard deviation
             points_df = points_df[
@@ -64,7 +64,7 @@ class PointCloud:
             # turn into np.array
             points = points_df[["px_world", "py_world", "pz_world"]].values
 
-        print(f"Kept {points.shape[0]} points after filtering!")
+        # print(f"Kept {points.shape[0]} points after filtering!")
 
         return PointCloud(points=torch.as_tensor(points).float())
 

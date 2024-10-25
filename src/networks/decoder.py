@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from enum import IntEnum
+from typing import OrderedDict
 
 import torch
 import torch.nn as nn
@@ -75,13 +76,14 @@ class SceneScriptDecoder(nn.Module):
         )
 
         # Decoding to bins
-        self.tail = nn.Sequential(
-            nn.Linear(d_model, 2 * d_model),
-            nn.ReLU(),
-            nn.Linear(2 * d_model, d_model),
-            nn.ReLU(),
-            nn.Linear(d_model, num_bins + HELPER_TOKEN.NUM),
-        )
+
+        self.tail = nn.Sequential(OrderedDict([
+            ('linear1', nn.Linear(d_model, 2 * d_model)),
+            ('relu1', nn.ReLU()),
+            ('linear2', nn.Linear(2 * d_model, d_model)),
+            ('relu2', nn.ReLU()),
+            ('linear3', nn.Linear(d_model, num_bins + HELPER_TOKEN.NUM)),
+        ]))
 
         self.register_buffer("causal_mask", make_autoregressive_mask(max_num_tokens))
 
@@ -100,8 +102,12 @@ class SceneScriptDecoder(nn.Module):
         # Target embedding
         t = torch.arange(T, device=device)
         pos_emb = repeat(self.position_embedding(t), "t d -> b t d", b=B)
-
+        # print(pos_emb)
         return pos_emb
+    
+    def prepare_inputs_for_generation(self, **inputs):
+        # print(inputs)
+        pass 
 
     def forward(self, context, context_mask, seq_value, seq_type):
         """
@@ -124,6 +130,7 @@ class SceneScriptDecoder(nn.Module):
 
         # Get causal_mask
         assert T <= self.max_num_tokens
+        # print(self.causal_mask)
         causal_mask = repeat(self.causal_mask[:T, :T], "T Y -> B T Y", B=B)
 
         # transformer
@@ -137,4 +144,23 @@ class SceneScriptDecoder(nn.Module):
         )  # [B, T, d_model]
         logits = self.tail(decoder_out)  # [B, T, num_bins + HELPER_TOKEN.NUM]
 
-        return logits
+        labels = seq_value  # [B, T]
+
+        log_probs = -nn.functional.log_softmax(logits, dim=-1)  # [B, T, num_bins + HELPER_TOKEN.NUM]
+        if labels.dim() == log_probs.dim() - 1:
+            labels = labels.unsqueeze(-1)  # [B, T, 1]
+
+        padding_mask = labels.eq(HELPER_TOKEN.PAD)  # [B, T, 1]
+        labels = torch.clamp(labels, min=0)  # [B, T, 1]
+        nll_loss = log_probs.gather(dim=-1, index=labels)  # [B, T, 1]
+        smoothed_loss = log_probs.sum(dim=-1, keepdim=True, dtype=torch.float32)  # [B, T, 1]
+
+        nll_loss.masked_fill_(padding_mask, 0.0)  # [B, T, 1]
+        smoothed_loss.masked_fill_(padding_mask, 0.0)  # [B, T, 1]
+
+        num_active_elements = padding_mask.numel() - padding_mask.long().sum()  # scalar
+        nll_loss = nll_loss.sum() / num_active_elements  # scalar
+        smoothed_loss = smoothed_loss.sum() / (num_active_elements * log_probs.shape[-1])  # scalar
+        loss = (1 - 0.1) * nll_loss + 0.1 * smoothed_loss  # scalar
+
+        return {"logits": logits, "loss": loss}
